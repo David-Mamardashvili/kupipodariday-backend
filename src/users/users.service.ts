@@ -1,9 +1,13 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike } from 'typeorm';
 import { User } from './entities/user.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { excludePassword } from '../utils/exclude-password';
+import { excludePassword } from 'src/utils/exclude-password';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
@@ -14,52 +18,27 @@ export class UsersService {
   ) {}
 
   async create(userData: Partial<User>) {
+    const existingUserByEmail = await this.usersRepository.findOne({
+      where: { email: userData.email },
+    });
+    if (existingUserByEmail) {
+      throw new ConflictException(
+        'Пользователь с таким email уже зарегистрирован',
+      );
+    }
+
+    const existingUserByUsername = await this.usersRepository.findOne({
+      where: { username: userData.username },
+    });
+    if (existingUserByUsername) {
+      throw new ConflictException(
+        'Пользователь с таким username уже зарегистрирован',
+      );
+    }
+
     const user = this.usersRepository.create(userData);
     const saved = await this.usersRepository.save(user);
     return excludePassword(saved);
-  }
-
-  async findOne(condition: Partial<User>) {
-    const user = await this.usersRepository.findOne({ where: condition });
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-    return user;
-  }
-
-  async updateOne(condition: Partial<User>, update: UpdateUserDto) {
-    const user = await this.findOne(condition);
-
-    if (update.password) {
-      update.password = await bcrypt.hash(update.password, 10);
-    }
-
-    Object.assign(user, update);
-    return this.usersRepository.save(user);
-  }
-
-  async removeOne(condition: Partial<User>) {
-    const user = await this.findOne(condition);
-    return this.usersRepository.remove(user);
-  }
-
-  async findByUsername(username: string) {
-    return this.usersRepository.findOne({ where: { username } });
-  }
-
-  async findByEmail(email: string) {
-    return this.usersRepository.findOne({ where: { email } });
-  }
-
-  async findMany(query: string) {
-    const users = await this.usersRepository.find({
-      where: [
-        { username: ILike(`%${query}%`) },
-        { email: ILike(`%${query}%`) },
-      ],
-    });
-
-    return users;
   }
 
   async findWithPasswordByUsername(username: string) {
@@ -67,5 +46,77 @@ export class UsersService {
       where: { username },
       select: ['id', 'username', 'email', 'password'],
     });
+  }
+
+  async getUserById(id: number) {
+    const user = await this.usersRepository.findOne({
+      where: { id },
+      relations: ['wishes'],
+    });
+
+    if (!user) {
+      throw new NotFoundException('Пользователь не найден');
+    }
+    return excludePassword(user);
+  }
+
+  async updateUser(id: number, dto: UpdateUserDto) {
+    const user = await this.getUserById(id);
+
+    if (dto.email && dto.email !== user.email) {
+      const existingEmail = await this.usersRepository.findOne({
+        where: { email: dto.email },
+      });
+      if (existingEmail) {
+        throw new ConflictException(
+          'Пользователь с таким email уже зарегистрирован',
+        );
+      }
+    }
+
+    if (dto.username && dto.username !== user.username) {
+      const existingUsername = await this.usersRepository.findOne({
+        where: { username: dto.username },
+      });
+      if (existingUsername) {
+        throw new ConflictException(
+          'Пользователь с таким username уже зарегистрирован',
+        );
+      }
+    }
+
+    if (dto.password) {
+      dto.password = await bcrypt.hash(dto.password, 10);
+    }
+
+    await this.usersRepository.update(id, dto);
+
+    return this.getUserById(id);
+  }
+
+  async getUserByUsername(username: string) {
+    const user = await this.usersRepository.findOne({ where: { username } });
+
+    if (!user) {
+      throw new NotFoundException('Пользователь не найден');
+    }
+
+    return excludePassword(user);
+  }
+
+  async findMultipleUsers(query: string) {
+    const users = await this.usersRepository.find({
+      where: [
+        { username: ILike(`%${query}%`) },
+        { email: ILike(`%${query}%`) },
+      ],
+      relations: ['wishes'],
+    });
+
+    if (users.length === 0) {
+      throw new NotFoundException('Пользователи не найдены');
+    }
+
+    return users.map(excludePassword);
   }
 }
